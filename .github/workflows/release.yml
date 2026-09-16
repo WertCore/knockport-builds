@@ -184,6 +184,15 @@ jobs:
           # is compiled into the bundle and readable by anyone holding the app,
           # so masking it in the log would protect nothing.
           VITE_TELEMETRY_URL: ${{ vars.TELEMETRY_URL }}
+          # Identity, same story as telemetry: Vite inlines these at BUILD
+          # time and they reached a developer only through a gitignored
+          # apps/web/.env, so every release so far shipped with auth switched
+          # off and said so on the button. Variables rather than secrets —
+          # an issuer, a client id and a public API base are all compiled into
+          # the bundle and readable by anyone holding the app.
+          VITE_IDENTITY_URL: ${{ vars.VITE_IDENTITY_URL }}
+          VITE_OIDC_ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
+          VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
         run: |
           bash scripts/fetch-engine.sh
           pnpm exec tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }}
