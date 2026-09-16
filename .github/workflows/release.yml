@@ -126,6 +126,43 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Signing is opt-in: with no certificate configured the build still
+      # produces an unsigned bundle rather than failing, which is what a test
+      # build wants. The variables are exported only when there IS one, so the
+      # bundler is never handed an empty certificate to import — and the
+      # warning says plainly what an unsigned macOS build means for whoever
+      # downloads it.
+      - name: macOS signing environment
+        if: startsWith(matrix.runner, 'macos')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::warning::APPLE_CERTIFICATE is not set — this macOS bundle will be unsigned, and Gatekeeper refuses an unsigned app with \"the app is damaged\" rather than a prompt."
+            exit 0
+          fi
+          missing=""
+          for v in APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          # Half-configured signing is worse than none: the bundle gets signed,
+          # notarisation is skipped, and Gatekeeper still rejects it — with the
+          # build green and nothing saying why.
+          if [ -n "$missing" ]; then
+            echo "::error::A certificate is configured but these are missing:$missing"
+            exit 1
+          fi
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
+          done
+          echo "signing as $APPLE_SIGNING_IDENTITY, notarising with team $APPLE_TEAM_ID"
+
       - name: Build
         working-directory: apps/desktop
         env:
@@ -139,6 +176,14 @@ jobs:
           # and fails, which is exactly how this broke the first time.
           # An absent password is not a secret, so it does not want hiding.
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          # Vite inlines this at BUILD time. It reaches a developer through a
+          # gitignored apps/web/.env, which by definition cannot reach a CI
+          # checkout — so every release built here shipped with the endpoint
+          # undefined, and reportInstall returned "skipped" on its first line
+          # without ever making a request. A variable rather than a secret: it
+          # is compiled into the bundle and readable by anyone holding the app,
+          # so masking it in the log would protect nothing.
+          VITE_TELEMETRY_URL: ${{ vars.TELEMETRY_URL }}
         run: |
           bash scripts/fetch-engine.sh
           pnpm exec tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }}
