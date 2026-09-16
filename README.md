@@ -33,7 +33,12 @@ the update, which is the point.
 |---|---|
 | `SOURCE_TOKEN` | A fine-grained PAT with **Contents: read** on `transmitworks/knockport` only |
 | `TAURI_SIGNING_PRIVATE_KEY` | Contents of `~/scam/knockport-updater.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Empty string if the key has no password |
+
+There is deliberately no secret for the signing password. The key has none, and
+GitHub will not store an empty secret value — so the workflow sets the variable
+to an empty string directly. Putting a space there instead makes it a real
+password, which Tauri then fails to decrypt with.
+
 
 `SOURCE_TOKEN` is scoped to one repository and read-only on purpose: this repo
 is a build service, and a build service that could write to the product source

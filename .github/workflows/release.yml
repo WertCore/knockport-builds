@@ -87,7 +87,12 @@ jobs:
           # Without these the build succeeds and produces artifacts the app
           # will refuse to install, which is the worst of both outcomes.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Literally empty, because the key was generated without a password.
+          # It cannot come from a secret: GitHub refuses to store an empty
+          # value, and a space is a PASSWORD — Tauri tries to decrypt with it
+          # and fails, which is exactly how this broke the first time.
+          # An absent password is not a secret, so it does not want hiding.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           bash scripts/fetch-engine.sh
           pnpm exec tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }}
