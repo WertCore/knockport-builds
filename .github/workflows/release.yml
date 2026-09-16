@@ -1,0 +1,130 @@
+name: release
+
+# Builds KnockPort for four targets from runners that can each build natively.
+# Cross-compiling a Tauri app is not a flag: every platform needs its own
+# webview, linker and bundler, which is exactly what a laptop cannot provide
+# and a matrix can.
+#
+# Runs here rather than in transmitworks/knockport because Actions minutes are
+# billed to the repository running the workflow. The source is checked out from
+# there with a read-only token and never lands in this repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag in transmitworks/knockport to build (e.g. v0.1.0)"
+        required: true
+      draft:
+        description: "Create the GitHub release as a draft"
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    strategy:
+      # One broken target should not deny you the other three. A macOS build
+      # failing at 3am must still leave Windows and Linux downloadable.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            label: macos-arm64
+            args: --target aarch64-apple-darwin
+          - runner: macos-13
+            label: macos-x64
+            args: --target x86_64-apple-darwin
+          - runner: windows-latest
+            label: windows-x64
+            args: ""
+          # 22.04 and not 24.04 on purpose: the glibc an AppImage is linked
+          # against is the OLDEST it will run on, so building on the newer
+          # image silently drops everyone still on 22.04.
+          - runner: ubuntu-22.04
+            label: linux-x64
+            args: ""
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out the product source
+        uses: actions/checkout@v5
+        with:
+          repository: transmitworks/knockport
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+
+      - name: Linux build dependencies
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev build-essential curl wget file
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.label == 'macos-arm64' && 'aarch64-apple-darwin' || matrix.label == 'macos-x64' && 'x86_64-apple-darwin' || '' }}
+
+      # Keyed on the lockfile AND the target: one cache shared across targets
+      # would thrash, each build evicting the last.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ${{ matrix.label }}
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: apps/desktop
+        env:
+          # Signs the bundle for the updater and writes a .sig beside it.
+          # Without these the build succeeds and produces artifacts the app
+          # will refuse to install, which is the worst of both outcomes.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          bash scripts/fetch-engine.sh
+          pnpm exec tauri build --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }}
+        shell: bash
+
+      - name: Collect the bundles
+        shell: bash
+        run: |
+          mkdir -p out
+          # -print0/-d '' so a path with a space cannot split into two.
+          find target -path '*/release/bundle/*' \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
+               -o -name '*.deb' -o -name '*.AppImage' -o -name '*.sig' \) \
+            -print0 | while IFS= read -r -d '' f; do cp "$f" out/; done
+          ls -la out/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: knockport-${{ matrix.label }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    # `always()` so three good targets still publish when a fourth failed —
+    # `needs` alone would skip this entirely.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { path: dist }
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+        run: |
+          find dist -type f | sort
+          gh release create "${{ inputs.tag }}" \
+            $(find dist -type f) \
+            --repo transmitworks/knockport \
+            --title "KnockPort ${{ inputs.tag }}" \
+            --notes "Desktop builds for macOS (Apple silicon and Intel), Windows and Linux." \
+            ${{ inputs.draft && '--draft' || '' }}
