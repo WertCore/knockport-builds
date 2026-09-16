@@ -128,6 +128,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SOURCE_TOKEN }}
         run: |
+          # Nothing to publish means every target failed, and those jobs are
+          # already red. Failing again here adds a second red mark carrying no
+          # information a reader did not already have.
+          if [ -z "$(find dist -type f 2>/dev/null)" ]; then
+            echo "No bundles were produced — every build target failed."
+            echo "The failure is in those jobs, not here."
+            exit 0
+          fi
           find dist -type f | sort
           gh release create "${{ inputs.tag }}" \
             $(find dist -type f) \
