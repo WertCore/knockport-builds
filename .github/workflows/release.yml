@@ -16,10 +16,10 @@ on:
         description: "Tag in transmitworks/knockport to build (e.g. v0.1.0)"
         required: true
       targets:
-        description: "all, or a comma-separated subset of macos-arm64, macos-x64, windows-x64, linux-x64"
+        description: "all, none, or a comma-separated subset of macos-arm64, macos-x64, windows-x64, linux-x64"
         default: all
       reuse_from_run:
-        description: "Run ID whose bundles to publish alongside this build's (empty for none)"
+        description: "Comma-separated run IDs whose bundles to publish alongside this build's (empty for none)"
         default: ""
       draft:
         description: "Create the GitHub release as a draft"
@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
+      any: ${{ steps.pick.outputs.any }}
     steps:
       - name: Pick the matrix
         id: pick
@@ -49,26 +50,39 @@ jobs:
             {"runner":"windows-latest", "label":"windows-x64",  "args":""},
             {"runner":"ubuntu-22.04",   "label":"linux-x64",    "args":""}
           ]'
-          if [ "$TARGETS" = "all" ]; then
+          if [ "$TARGETS" = "none" ] || [ -z "$TARGETS" ]; then
+            # Every bundle already exists somewhere in reuse_from_run, so this
+            # run only has to publish. One ubuntu minute instead of four builds.
+            picked='[]'
+          elif [ "$TARGETS" = "all" ]; then
             picked=$(jq -c . <<<"$all")
           else
             picked=$(jq -c --arg t "$TARGETS" '
               ($t | split(",") | map(gsub("^ +| +$"; ""))) as $want
               | map(select(.label as $l | $want | index($l) != null))
             ' <<<"$all")
+            # Empty AFTER a real request is a typo, not a publish-only run.
+            # Failing here costs one ubuntu minute; failing later costs the
+            # reader an hour working out why the job never appeared.
+            if [ "$(jq length <<<"$picked")" -eq 0 ]; then
+              echo "::error::No target matches '$TARGETS'. Valid: all, none, macos-arm64, macos-x64, windows-x64, linux-x64."
+              exit 1
+            fi
           fi
-          # An empty matrix is a typo in the input, not a build with nothing to
-          # do. Failing here costs one ubuntu minute; failing later costs the
-          # reader an hour working out why four jobs never appeared.
           if [ "$(jq length <<<"$picked")" -eq 0 ]; then
-            echo "::error::No target matches '$TARGETS'. Valid: macos-arm64, macos-x64, windows-x64, linux-x64."
-            exit 1
+            echo "Building nothing; publishing what reuse_from_run already holds."
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building: $(jq -r 'map(.label) | join(", ")' <<<"$picked")"
+            echo "any=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "Building: $(jq -r 'map(.label) | join(", ")' <<<"$picked")"
           echo "matrix=$picked" >> "$GITHUB_OUTPUT"
 
   build:
     needs: plan
+    # Guarding the job, not the matrix: an `include:` that expands to nothing
+    # fails the run outright rather than skipping.
+    if: needs.plan.outputs.any == 'true'
     strategy:
       # One broken target should not deny you the other three. A macOS build
       # failing at 3am must still leave Windows and Linux downloadable.
@@ -137,7 +151,8 @@ jobs:
           # -print0/-d '' so a path with a space cannot split into two.
           find target -path '*/release/bundle/*' \
             \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
-               -o -name '*.deb' -o -name '*.AppImage' -o -name '*.sig' \) \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+               -o -name '*.tar.gz' -o -name '*.sig' \) \
             -print0 | while IFS= read -r -d '' f; do cp "$f" out/; done
           ls -la out/
 
@@ -163,13 +178,21 @@ jobs:
 
       # Artifacts outlive their run by 90 days, so a one-target rebuild can
       # still publish a complete set rather than rebuilding the other three.
-      - name: Bundles from an earlier run
+      # gh rather than download-artifact: the action takes a single run-id, and
+      # a set assembled over several fixes comes from several runs.
+      - name: Bundles from earlier runs
         if: inputs.reuse_from_run != ''
-        uses: actions/download-artifact@v8
-        with:
-          path: dist
-          run-id: ${{ inputs.reuse_from_run }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUNS: ${{ inputs.reuse_from_run }}
+        run: |
+          for id in ${RUNS//,/ }; do
+            [ -n "$id" ] || continue
+            echo "::group::Bundles from run $id"
+            gh run download "$id" --dir "dist/run-$id"
+            echo "::endgroup::"
+          done
 
       - name: Publish
         env:
@@ -179,6 +202,9 @@ jobs:
           # built-in token suffices and the build service still cannot write to
           # the source.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # There is no checkout in this job, so gh cannot infer the repository
+          # from a git remote — which is exactly how the first attempt died.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
         run: |
           mkdir -p dist
