@@ -177,8 +177,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions:
-      # Enough to cut a release here, and to read an earlier run's artifacts.
-      contents: write
+      # The release is cut in another repository with RELEASE_TOKEN, so nothing
+      # here needs write. actions:read is for pulling an earlier run's bundles.
+      contents: read
       actions: read
     steps:
       - uses: actions/download-artifact@v8
@@ -204,17 +205,23 @@ jobs:
 
       - name: Publish
         env:
-          # Not SOURCE_TOKEN. That one is Contents:read on the product repo by
-          # design, and creating a release needs write — which is why this used
-          # to fail with a 403. The release lives here instead, where the
-          # built-in token suffices and the build service still cannot write to
-          # the source.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # There is no checkout in this job, so gh cannot infer the repository
-          # from a git remote — which is exactly how the first attempt died.
-          GH_REPO: ${{ github.repository }}
+          # Not SOURCE_TOKEN: that one is Contents:read on the product repo by
+          # design, and creating a release needs write. Not GITHUB_TOKEN
+          # either, which cannot reach outside this repository.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          # A public repository holding nothing but releases, so these URLs
+          # work for a stranger while this pipeline and its logs stay private.
+          # Set explicitly because there is no checkout in this job for gh to
+          # infer a repository from — which is how the first attempt died.
+          GH_REPO: WertCore/knockport-releases
           TAG: ${{ inputs.tag }}
         run: |
+          # Said plainly here, because the alternative is a 403 from an API URL
+          # that names no cause, after every build has already been paid for.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN is not set. It needs Contents: write on $GH_REPO."
+            exit 1
+          fi
           mkdir -p dist
           # -print0 into an array: a bundle name with a space is one file, not
           # two arguments.
@@ -253,7 +260,6 @@ jobs:
             gh release upload "$TAG" "${files[@]}" --clobber
           else
             gh release create "$TAG" "${files[@]}" \
-              --target "${{ github.sha }}" \
               --title "KnockPort $TAG" \
               --notes "Desktop builds for macOS (Apple silicon and Intel), Windows and Linux." \
               ${{ inputs.draft && '--draft' || '' }}
