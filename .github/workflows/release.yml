@@ -154,6 +154,14 @@ jobs:
                -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
                -o -name '*.tar.gz' -o -name '*.sig' \) \
             -print0 | while IFS= read -r -d '' f; do cp "$f" out/; done
+          # Both macOS arches call the updater bundle KnockPort.app.tar.gz, and
+          # a release names its assets by basename alone — so the second one
+          # uploaded overwrites or rejects the first. The target label is the
+          # only thing that tells them apart.
+          for f in out/KnockPort.app.tar.gz out/KnockPort.app.tar.gz.sig; do
+            [ -e "$f" ] || continue
+            mv "$f" "out/KnockPort_${{ matrix.label }}.${f#out/KnockPort.}"
+          done
           ls -la out/
 
       - uses: actions/upload-artifact@v7
@@ -210,7 +218,18 @@ jobs:
           mkdir -p dist
           # -print0 into an array: a bundle name with a space is one file, not
           # two arguments.
-          mapfile -t -d '' files < <(find dist -type f -print0)
+          mapfile -t -d '' found < <(find dist -type f -print0)
+          # A .sig whose payload was not collected signs nothing anyone can
+          # check. Publishing it invites a downloader to verify a file that is
+          # not there.
+          files=()
+          for f in "${found[@]}"; do
+            if [ "${f%.sig}" != "$f" ] && [ ! -e "${f%.sig}" ]; then
+              echo "skip ${f##*/}: signs a bundle this release does not carry"
+              continue
+            fi
+            files+=("$f")
+          done
           # Nothing to publish means every target failed, and those jobs are
           # already red. Failing again here adds a second red mark carrying no
           # information a reader did not already have.
@@ -218,6 +237,14 @@ jobs:
             echo "No bundles were produced — every build target failed."
             echo "The failure is in those jobs, not here."
             exit 0
+          fi
+          # Assets live in one flat namespace per release, so a duplicate
+          # basename fails mid-upload with a 404 that names no cause. Say it
+          # here, before anything has been uploaded.
+          dupes=$(printf '%s\n' "${files[@]##*/}" | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::Two targets produced the same asset name: $(echo $dupes | tr '\n' ' ')"
+            exit 1
           fi
           printf '%s\n' "${files[@]}" | sort
           if gh release view "$TAG" >/dev/null 2>&1; then
