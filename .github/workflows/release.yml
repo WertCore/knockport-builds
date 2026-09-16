@@ -197,7 +197,7 @@ jobs:
           find target -path '*/release/bundle/*' \
             \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
                -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
-               -o -name '*.tar.gz' -o -name '*.sig' \) \
+               -o -name '*.app.tar.gz' -o -name '*.sig' \) \
             -print0 | while IFS= read -r -d '' f; do cp "$f" out/; done
           # Both macOS arches call the updater bundle KnockPort.app.tar.gz, and
           # a release names its assets by basename alone — so the second one
