@@ -5,7 +5,7 @@ name: release
 # webview, linker and bundler, which is exactly what a laptop cannot provide
 # and a matrix can.
 #
-# Runs here rather than in transmitworks/knockport because Actions minutes are
+# Runs here rather than beside the source because Actions minutes are
 # billed to the repository running the workflow. The source is checked out from
 # there with a read-only token and never lands in this repository.
 
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag in transmitworks/knockport to build (e.g. v0.1.0)"
+        description: "Tag in wertcore/knockport (Bitbucket) to build (e.g. v0.1.0)"
         required: true
       targets:
         description: "all, none, or a comma-separated subset of macos-arm64, macos-x64, windows-x64, linux-x64"
@@ -92,12 +92,26 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Check out the product source
-        uses: actions/checkout@v5
-        with:
-          repository: transmitworks/knockport
-          ref: ${{ inputs.tag }}
-          token: ${{ secrets.SOURCE_TOKEN }}
+      # A clone, not actions/checkout: the source lives in Bitbucket now, and
+      # actions/checkout only speaks to GitHub. Building straight from Bitbucket
+      # is what removes the need to keep GitHub in step at all — there is no
+      # mirror, and a release does not wait on one.
+      #
+      # x-token-auth is the username Bitbucket expects for token auth over
+      # https. The email cannot be used here: its `@` makes git read the host
+      # as the part after it and the token as a port number.
+      - name: Check out the product source from Bitbucket
+        shell: bash
+        env:
+          BB_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+        run: |
+          git clone --quiet --depth 1 --branch "${{ inputs.tag }}" \
+            "https://x-token-auth:${BB_TOKEN}@bitbucket.org/wertcore/knockport.git" . \
+            || { echo "::error::could not clone ${{ inputs.tag }} from wertcore/knockport — does the tag exist on Bitbucket?"; exit 1; }
+          # The url carries a credential; drop it so nothing later can leak or
+          # reuse it, and so a stray push cannot reach Bitbucket from a runner.
+          git remote remove origin
+          echo "checked out $(git rev-parse --short HEAD) from Bitbucket"
 
       - name: Linux build dependencies
         if: matrix.runner == 'ubuntu-22.04'
